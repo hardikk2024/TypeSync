@@ -1,13 +1,14 @@
 // @vitest-environment node
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import transcriptApi from "../../api/transcript";
+import {
+  createTranscriptApi,
+  type AutoCaptionResult,
+} from "../../api/transcript";
 
-const fetchVideoCaptionsMock = vi.hoisted(() => vi.fn());
-
-vi.mock("../server/transcriptHandler", () => ({
-  fetchVideoCaptions: fetchVideoCaptionsMock,
-}));
+const fetchVideoCaptionsMock =
+  vi.fn<(videoId: string, language?: string) => Promise<AutoCaptionResult>>();
+const transcriptApi = createTranscriptApi(fetchVideoCaptionsMock);
 
 const VIDEO_ID = "V9PVRfjEBTI";
 
@@ -37,7 +38,7 @@ describe("Vercel transcript endpoint", () => {
   });
 
   it("returns captions in the shape expected by the client", async () => {
-    const transcript = {
+    const transcript: AutoCaptionResult = {
       videoId: VIDEO_ID,
       videoTitle: "Sample video",
       language: "en",
