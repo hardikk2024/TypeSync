@@ -47,6 +47,12 @@ export default async function transcriptApi(
       await import("../src/server/transcriptHandler.ts"));
   } catch (error) {
     console.error("Caption module failed to load", error);
+    const missingModule =
+      error instanceof Error && error.message.includes("youtube-transcript")
+        ? "youtube-transcript"
+        : error instanceof Error && error.message.includes("transcriptHandler")
+          ? "transcriptHandler"
+          : "other";
     const reason =
       error &&
       typeof error === "object" &&
@@ -57,6 +63,7 @@ export default async function transcriptApi(
     sendJson(response, 500, {
       code: "CAPTION_MODULE_UNAVAILABLE",
       reason,
+      missingModule,
       error:
         "Caption service could not start. Try again later or paste a transcript.",
     });
