@@ -1,0 +1,186 @@
+import { YoutubeTranscript } from "youtube-transcript";
+import type { IncomingMessage, ServerResponse } from "http";
+
+export interface AutoCaptionResult {
+  videoId: string;
+  videoTitle: string;
+  language?: string;
+  captions: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+  }>;
+  source: "auto";
+}
+
+export async function fetchVideoCaptions(
+  videoId: string,
+  requestedLang: string = "en",
+): Promise<AutoCaptionResult> {
+  let title = "YouTube Video";
+  try {
+    const oembedRes = await fetch(
+      `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+    );
+    if (oembedRes.ok) {
+      const oembed = (await oembedRes.json()) as { title?: string };
+      title = oembed.title || title;
+    }
+  } catch {
+    // Ignore oembed failure
+  }
+
+  let items: Array<{
+    text: string;
+    offset: number;
+    duration: number;
+    lang?: string;
+  }> | null = null;
+  let resolvedLang = requestedLang;
+
+  // 1. Try requested language with YoutubeTranscript
+  if (requestedLang) {
+    try {
+      items = await YoutubeTranscript.fetchTranscript(videoId, {
+        lang: requestedLang,
+      });
+    } catch {
+      // Ignore and fallback
+    }
+  }
+
+  // 2. Try default language with YoutubeTranscript
+  if (!items || items.length === 0) {
+    try {
+      items = await YoutubeTranscript.fetchTranscript(videoId);
+      if (items && items[0]?.lang) {
+        resolvedLang = items[0].lang;
+      }
+    } catch {
+      // Ignore and fallback
+    }
+  }
+
+  // 3. Fallback: Parse from YouTube HTML captionTracks
+  if (!items || items.length === 0) {
+    try {
+      const pageRes = await fetch(
+        `https://www.youtube.com/watch?v=${videoId}`,
+        {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+        },
+      );
+      const html = await pageRes.text();
+      const match = html.match(/"captionTracks":\s*(\[[^\]]+\])/);
+      if (match) {
+        const tracks = JSON.parse(match[1]);
+        const track =
+          tracks.find(
+            (t: { languageCode: string }) => t.languageCode === requestedLang,
+          ) ||
+          tracks.find((t: { languageCode: string }) =>
+            t.languageCode?.startsWith("en"),
+          ) ||
+          tracks[0];
+        if (track && track.baseUrl) {
+          const trackRes = await fetch(track.baseUrl);
+          const xml = await trackRes.text();
+          resolvedLang = track.languageCode;
+          const regex =
+            /<text start="([\d\.]+)"(?: dur="([\d\.]+)")?[^>]*>([\s\S]*?)<\/text>/g;
+          let m: RegExpExecArray | null;
+          items = [];
+          while ((m = regex.exec(xml)) !== null) {
+            const startSec = parseFloat(m[1]);
+            const durSec = m[2] ? parseFloat(m[2]) : 4;
+            items.push({
+              text: m[3],
+              offset: startSec * 1000,
+              duration: durSec * 1000,
+              lang: resolvedLang,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Fallback HTML captionTracks error:", err);
+    }
+  }
+
+  if (!items || items.length === 0) {
+    throw new Error(
+      "No captions could be found for this video. You can paste or upload your own transcript.",
+    );
+  }
+
+  const captions = items
+    .map((item, index) => {
+      const text = item.text
+        .replace(/&amp;/g, "&")
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/[\u266a\u266b\u266c\u2669\u266f♪♫#]+/g, "")
+        .replace(/\[[^\]]*\]/g, "") // remove [Music], [Applause], etc.
+        .replace(/\s+/g, " ")
+        .trim();
+
+      return {
+        id: "c" + index,
+        startTime: item.offset / 1000,
+        endTime: (item.offset + item.duration) / 1000,
+        text,
+      };
+    })
+    .filter((c) => c.text.length > 0);
+
+  if (captions.length === 0) {
+    throw new Error("Captions were found but did not contain playable text.");
+  }
+
+  return {
+    videoId,
+    videoTitle: title,
+    language: resolvedLang,
+    captions,
+    source: "auto",
+  };
+}
+
+export function handleTranscriptApi(req: IncomingMessage, res: ServerResponse) {
+  const url = new URL(
+    req.url || "",
+    `http://${req.headers.host || "localhost"}`,
+  );
+  const videoId = url.searchParams.get("videoId");
+  const lang = url.searchParams.get("lang") || "en";
+
+  if (!videoId) {
+    res.statusCode = 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ error: "videoId query parameter is required" }));
+    return;
+  }
+
+  fetchVideoCaptions(videoId, lang)
+    .then((data) => {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.end(JSON.stringify(data));
+    })
+    .catch((err) => {
+      res.statusCode = 404;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.end(
+        JSON.stringify({ error: err.message || "Failed to fetch transcript" }),
+      );
+    });
+}
