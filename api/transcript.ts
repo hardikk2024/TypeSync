@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { fetchVideoCaptions } from "../src/server/transcriptHandler";
 
 const VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 const LANGUAGE_CODE_PATTERN = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
@@ -39,6 +38,19 @@ export default async function transcriptApi(
 
   if (!LANGUAGE_CODE_PATTERN.test(language)) {
     sendJson(response, 400, { error: "Enter a valid caption language." });
+    return;
+  }
+
+  let fetchVideoCaptions: typeof import("../src/server/transcriptHandler").fetchVideoCaptions;
+  try {
+    ({ fetchVideoCaptions } = await import("../src/server/transcriptHandler"));
+  } catch (error) {
+    console.error("Caption module failed to load", error);
+    sendJson(response, 500, {
+      code: "CAPTION_MODULE_UNAVAILABLE",
+      error:
+        "Caption service could not start. Try again later or paste a transcript.",
+    });
     return;
   }
 
