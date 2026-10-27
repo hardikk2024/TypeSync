@@ -7,6 +7,90 @@ class CaptionLookupError extends Error {
   }
 }
 
+type CaptionItem = {
+  text: string;
+  offset: number;
+  duration: number;
+  lang?: string;
+};
+
+function isCaptionItem(value: unknown): value is CaptionItem {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.text === "string" &&
+    typeof item.offset === "number" &&
+    Number.isFinite(item.offset) &&
+    item.offset >= 0 &&
+    typeof item.duration === "number" &&
+    Number.isFinite(item.duration) &&
+    item.duration > 0
+  );
+}
+
+function parseProviderResult(value: unknown): {
+  items: CaptionItem[];
+  language: string;
+} {
+  if (!value || typeof value !== "object") {
+    throw new Error("Transcript provider returned an invalid response.");
+  }
+  const result = value as Record<string, unknown>;
+  if (!Array.isArray(result.content) || !result.content.every(isCaptionItem)) {
+    throw new Error("Transcript provider did not return timestamped captions.");
+  }
+  return {
+    items: result.content,
+    language: typeof result.lang === "string" ? result.lang : "en",
+  };
+}
+
+/** Fetches only existing captions so a request cannot trigger paid AI transcription. */
+export async function fetchHostedCaptions(
+  videoId: string,
+  language: string,
+  apiKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<{ items: CaptionItem[]; language: string }> {
+  const url = new URL("https://api.supadata.ai/v1/transcript");
+  url.searchParams.set("url", `https://www.youtube.com/watch?v=${videoId}`);
+  url.searchParams.set("lang", language);
+  url.searchParams.set("text", "false");
+  url.searchParams.set("mode", "native");
+
+  const headers = { "x-api-key": apiKey };
+  const request = async (target: string): Promise<Response> =>
+    fetcher(target, { headers, signal: AbortSignal.timeout(8000) });
+
+  let response = await request(url.toString());
+  if (response.status === 202) {
+    const job = (await response.json()) as { jobId?: unknown };
+    if (
+      typeof job.jobId !== "string" ||
+      !/^[A-Za-z0-9-]{1,100}$/.test(job.jobId)
+    ) {
+      throw new Error("Transcript provider returned an invalid job ID.");
+    }
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      response = await request(
+        `https://api.supadata.ai/v1/transcript/${job.jobId}`,
+      );
+      if (!response.ok) break;
+      const status = (await response.json()) as { status?: unknown };
+      if (status.status === "completed") return parseProviderResult(status);
+      if (status.status === "failed") {
+        throw new Error("Transcript provider could not process this video.");
+      }
+    }
+    throw new Error("Transcript provider is still processing this video.");
+  }
+  if (!response.ok) {
+    throw new Error(`Transcript provider returned HTTP ${response.status}.`);
+  }
+  return parseProviderResult(await response.json());
+}
+
 export interface AutoCaptionResult {
   videoId: string;
   videoTitle: string;
@@ -38,16 +122,29 @@ export async function fetchVideoCaptions(
     // Ignore oembed failure
   }
 
-  let items: Array<{
-    text: string;
-    offset: number;
-    duration: number;
-    lang?: string;
-  }> | null = null;
+  let items: CaptionItem[] | null = null;
   let resolvedLang = requestedLang;
 
+  const hostedApiKey = process.env.SUPADATA_API_KEY;
+  if (hostedApiKey) {
+    try {
+      const hosted = await fetchHostedCaptions(
+        videoId,
+        requestedLang,
+        hostedApiKey,
+      );
+      items = hosted.items;
+      resolvedLang = hosted.language;
+    } catch (error) {
+      diagnostics.push(
+        `hosted:${error instanceof Error ? error.message : "unknown"}`,
+      );
+      console.error("Hosted caption lookup failed", error);
+    }
+  }
+
   // 1. Try requested language with YoutubeTranscript
-  if (requestedLang) {
+  if ((!items || items.length === 0) && requestedLang) {
     try {
       items = await YoutubeTranscript.fetchTranscript(videoId, {
         lang: requestedLang,
