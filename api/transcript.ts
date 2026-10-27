@@ -41,13 +41,22 @@ export default async function transcriptApi(
     return;
   }
 
-  let fetchVideoCaptions: typeof import("../src/server/transcriptHandler").fetchVideoCaptions;
+  let fetchVideoCaptions: typeof import("../src/server/transcriptHandler.ts").fetchVideoCaptions;
   try {
-    ({ fetchVideoCaptions } = await import("../src/server/transcriptHandler"));
+    ({ fetchVideoCaptions } =
+      await import("../src/server/transcriptHandler.ts"));
   } catch (error) {
     console.error("Caption module failed to load", error);
+    const reason =
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      typeof error.code === "string"
+        ? error.code
+        : "UNKNOWN";
     sendJson(response, 500, {
       code: "CAPTION_MODULE_UNAVAILABLE",
+      reason,
       error:
         "Caption service could not start. Try again later or paste a transcript.",
     });
