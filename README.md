@@ -110,6 +110,18 @@ Potential approaches include:
 
 When captions are unavailable, the application should explain the limitation rather than display fabricated lyrics.
 
+### Production auto captions on Vercel
+
+YouTube can return a bot-check page to Vercel functions, even when the same video works locally. TypeSync can use the Supadata transcript API for existing timestamped captions in production. The API key stays on the server and is never sent to the browser.
+
+1. Create a Supadata API key at [Supadata](https://dash.supadata.ai/).
+2. In the Vercel project, open **Settings > Environment Variables**.
+3. Add `SUPADATA_API_KEY` with the key as its value, select **Production**, and save it as a sensitive value.
+4. Redeploy the latest production deployment so the function receives the new variable.
+5. Open `https://type-sync-three.vercel.app/api/transcript?videoId=V9PVRfjEBTI` and confirm it returns caption JSON, then try the video in the app.
+
+The integration uses `mode=native`, which fetches existing captions without requesting AI-generated transcription. If the provider has no captions for a video, users can still paste or upload a transcript. Provider usage limits depend on the Supadata account.
+
 ## 🗺️ Roadmap
 
 - [ ] Build the responsive home and gameplay interfaces.

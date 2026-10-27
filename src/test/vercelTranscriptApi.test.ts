@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTranscriptApi,
+  fetchHostedCaptions,
   type AutoCaptionResult,
 } from "../../api/transcript";
 
@@ -88,5 +89,74 @@ describe("Vercel transcript endpoint", () => {
 
     expect(reply.statusCode).toBe(405);
     expect(reply.setHeader).toHaveBeenCalledWith("Allow", "GET");
+  });
+});
+
+describe("hosted transcript provider", () => {
+  it("requests existing timestamped captions with the key in a server header", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          content: [
+            { text: "Hello", offset: 1000, duration: 2000, lang: "en" },
+          ],
+          lang: "en",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await fetchHostedCaptions(
+      VIDEO_ID,
+      "en",
+      "test-key",
+      fetcher,
+    );
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].offset).toBe(1000);
+    const [url, options] = fetcher.mock.calls[0];
+    expect(new URL(String(url)).searchParams.get("mode")).toBe("native");
+    expect(new URL(String(url)).searchParams.get("text")).toBe("false");
+    expect(options?.headers).toEqual({ "x-api-key": "test-key" });
+    expect(String(url)).not.toContain("test-key");
+  });
+
+  it("polls an asynchronous transcript job", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jobId: "job-123" }), { status: 202 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "completed",
+            content: [{ text: "Ready", offset: 0, duration: 1000 }],
+            lang: "en",
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.useFakeTimers();
+    try {
+      const pending = fetchHostedCaptions(VIDEO_ID, "en", "test-key", fetcher);
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await pending).items[0].text).toBe("Ready");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects untimed responses instead of showing fabricated captions", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ content: "plain text" })),
+      );
+    await expect(
+      fetchHostedCaptions(VIDEO_ID, "en", "test-key", fetcher),
+    ).rejects.toThrow("timestamped captions");
   });
 });
