@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import transcriptApi from "../../api/transcript";
 
@@ -8,8 +9,19 @@ vi.mock("../server/transcriptHandler", () => ({
   fetchVideoCaptions: fetchVideoCaptionsMock,
 }));
 
-const API_URL = "https://typesync.example/api/transcript";
 const VIDEO_ID = "V9PVRfjEBTI";
+
+function request(url: string, method = "GET"): IncomingMessage {
+  return { url, method } as IncomingMessage;
+}
+
+function response(): ServerResponse {
+  return {
+    statusCode: 200,
+    setHeader: vi.fn(),
+    end: vi.fn(),
+  } as unknown as ServerResponse;
+}
 
 describe("Vercel transcript endpoint", () => {
   beforeEach(() => {
@@ -17,15 +29,14 @@ describe("Vercel transcript endpoint", () => {
   });
 
   it("rejects invalid video IDs without calling YouTube", async () => {
-    const response = await transcriptApi.fetch(
-      new Request(`${API_URL}?videoId=invalid`),
-    );
+    const reply = response();
+    await transcriptApi(request("/api/transcript?videoId=invalid"), reply);
 
-    expect(response.status).toBe(400);
+    expect(reply.statusCode).toBe(400);
     expect(fetchVideoCaptionsMock).not.toHaveBeenCalled();
   });
 
-  it("returns the captions in the shape expected by the client", async () => {
+  it("returns captions in the shape expected by the client", async () => {
     const transcript = {
       videoId: VIDEO_ID,
       videoTitle: "Sample video",
@@ -34,38 +45,47 @@ describe("Vercel transcript endpoint", () => {
       source: "auto",
     };
     fetchVideoCaptionsMock.mockResolvedValue(transcript);
+    const reply = response();
 
-    const response = await transcriptApi.fetch(
-      new Request(`${API_URL}?videoId=${VIDEO_ID}&lang=en`),
+    await transcriptApi(
+      request(`/api/transcript?videoId=${VIDEO_ID}&lang=en`),
+      reply,
     );
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(transcript);
+    expect(reply.statusCode).toBe(200);
+    expect(reply.setHeader).toHaveBeenCalledWith(
+      "Content-Type",
+      "application/json; charset=utf-8",
+    );
+    expect(reply.end).toHaveBeenCalledWith(JSON.stringify(transcript));
     expect(fetchVideoCaptionsMock).toHaveBeenCalledWith(VIDEO_ID, "en");
   });
 
   it("explains when a video has no captions", async () => {
     fetchVideoCaptionsMock.mockRejectedValue(new Error("Provider failed"));
     vi.spyOn(console, "error").mockImplementation(() => {});
+    const reply = response();
 
-    const response = await transcriptApi.fetch(
-      new Request(`${API_URL}?videoId=${VIDEO_ID}`),
+    await transcriptApi(request(`/api/transcript?videoId=${VIDEO_ID}`), reply);
+
+    expect(reply.statusCode).toBe(404);
+    expect(reply.end).toHaveBeenCalledWith(
+      JSON.stringify({
+        error:
+          "No captions could be found for this video. Paste or upload a transcript to continue.",
+      }),
     );
-
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({
-      error:
-        "No captions could be found for this video. Paste or upload a transcript to continue.",
-    });
     vi.restoreAllMocks();
   });
 
   it("rejects unsupported methods", async () => {
-    const response = await transcriptApi.fetch(
-      new Request(`${API_URL}?videoId=${VIDEO_ID}`, { method: "POST" }),
+    const reply = response();
+    await transcriptApi(
+      request(`/api/transcript?videoId=${VIDEO_ID}`, "POST"),
+      reply,
     );
 
-    expect(response.status).toBe(405);
-    expect(response.headers.get("Allow")).toBe("GET");
+    expect(reply.statusCode).toBe(405);
+    expect(reply.setHeader).toHaveBeenCalledWith("Allow", "GET");
   });
 });
