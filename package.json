@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "lint": "eslint src vite.config.ts",
-    "format": "prettier --write src vite.config.ts eslint.config.js",
-    "format:check": "prettier --check src vite.config.ts eslint.config.js",
+    "lint": "eslint src api vite.config.ts",
+    "format": "prettier --write src api vite.config.ts eslint.config.js",
+    "format:check": "prettier --check src api vite.config.ts eslint.config.js",
     "typecheck": "tsc -b --pretty false",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
