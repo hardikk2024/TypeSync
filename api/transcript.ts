@@ -90,6 +90,14 @@ export async function fetchVideoCaptions(
       );
       diagnostics.push(`watch:${pageRes.status}`);
       const html = await pageRes.text();
+      diagnostics.push(`watch-bytes:${html.length}`);
+      diagnostics.push(
+        `watch-player:${html.includes("ytInitialPlayerResponse")}`,
+      );
+      diagnostics.push(`watch-consent:${html.includes("consent.youtube.com")}`);
+      diagnostics.push(
+        `watch-bot:${html.includes("Sign in to confirm you’re not a bot") || html.includes("Sign in to confirm you're not a bot")}`,
+      );
       const match = html.match(/"captionTracks":\s*(\[[^\]]+\])/);
       if (!match) diagnostics.push("watch:no-tracks");
       if (match) {
