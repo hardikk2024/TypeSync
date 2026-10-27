@@ -1,6 +1,12 @@
 import { YoutubeTranscript } from "youtube-transcript";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+class CaptionLookupError extends Error {
+  constructor(readonly diagnostics: string[]) {
+    super("No captions could be found for this video.");
+  }
+}
+
 export interface AutoCaptionResult {
   videoId: string;
   videoTitle: string;
@@ -18,6 +24,7 @@ export async function fetchVideoCaptions(
   videoId: string,
   requestedLang: string = "en",
 ): Promise<AutoCaptionResult> {
+  const diagnostics: string[] = [];
   let title = "YouTube Video";
   try {
     const oembedRes = await fetch(
@@ -45,7 +52,10 @@ export async function fetchVideoCaptions(
       items = await YoutubeTranscript.fetchTranscript(videoId, {
         lang: requestedLang,
       });
-    } catch {
+    } catch (error) {
+      diagnostics.push(
+        `requested:${error instanceof Error ? error.name : "unknown"}`,
+      );
       // Ignore and fallback
     }
   }
@@ -57,7 +67,10 @@ export async function fetchVideoCaptions(
       if (items && items[0]?.lang) {
         resolvedLang = items[0].lang;
       }
-    } catch {
+    } catch (error) {
+      diagnostics.push(
+        `default:${error instanceof Error ? error.name : "unknown"}`,
+      );
       // Ignore and fallback
     }
   }
@@ -75,8 +88,10 @@ export async function fetchVideoCaptions(
           },
         },
       );
+      diagnostics.push(`watch:${pageRes.status}`);
       const html = await pageRes.text();
       const match = html.match(/"captionTracks":\s*(\[[^\]]+\])/);
+      if (!match) diagnostics.push("watch:no-tracks");
       if (match) {
         const tracks = JSON.parse(match[1]);
         const track =
@@ -89,7 +104,9 @@ export async function fetchVideoCaptions(
           tracks[0];
         if (track && track.baseUrl) {
           const trackRes = await fetch(track.baseUrl);
+          diagnostics.push(`track:${trackRes.status}`);
           const xml = await trackRes.text();
+          diagnostics.push(`track-bytes:${xml.length}`);
           resolvedLang = track.languageCode;
           const regex =
             /<text start="([\d\.]+)"(?: dur="([\d\.]+)")?[^>]*>([\s\S]*?)<\/text>/g;
@@ -108,14 +125,15 @@ export async function fetchVideoCaptions(
         }
       }
     } catch (err) {
+      diagnostics.push(
+        `fallback:${err instanceof Error ? err.name : "unknown"}`,
+      );
       console.error("Fallback HTML captionTracks error:", err);
     }
   }
 
   if (!items || items.length === 0) {
-    throw new Error(
-      "No captions could be found for this video. You can paste or upload your own transcript.",
-    );
+    throw new CaptionLookupError(diagnostics);
   }
 
   const captions = items
@@ -203,6 +221,9 @@ export function createTranscriptApi(lookup: typeof fetchVideoCaptions) {
       sendJson(response, 404, {
         error:
           "No captions could be found for this video. Paste or upload a transcript to continue.",
+        ...(error instanceof CaptionLookupError && {
+          diagnostics: error.diagnostics,
+        }),
       });
     }
   };
